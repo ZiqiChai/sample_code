@@ -1,0 +1,1 @@
+/usr/local/bin/dti_move_object_frame

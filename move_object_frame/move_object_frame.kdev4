@@ -1,0 +1,3 @@
+[Project]
+Manager=KDevCMakeManager
+Name=move_object_frame
