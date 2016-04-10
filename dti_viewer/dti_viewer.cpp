@@ -40,6 +40,7 @@
 // PCL
 #include <pcl/common/common.h>
 #include <pcl/io/pcd_io.h>
+#include <pcl/io/ply_io.h>
 #include <cfloat>
 #include <pcl/visualization/eigen.h>
 //#include <pcl/visualization/vtk.h>
@@ -55,6 +56,7 @@
 #include <pcl/console/parse.h>
 #include <pcl/console/time.h>
 #include <pcl/search/kdtree.h>
+#include <pcl/common/transforms.h>
 #include <vtkPolyDataReader.h>
 
 using namespace pcl::console;
@@ -96,6 +98,93 @@ isOnly2DImage (const pcl::PCLPointField &field)
     return (true);
   return (false);
 }
+
+Eigen::Matrix4f 
+readMatrix(std::string filename){
+	using namespace std;
+	int cols = 0, rows = 0;
+	double buff[1000];
+
+	// Read numbers from file into buffer.
+	ifstream infile;
+	infile.open(filename.c_str());
+	if (!infile.is_open()){
+		pcl::console::print_error("Could not open file: "); pcl::console::print_value(filename.c_str()); pcl::console::print_info("\n");	
+	}
+
+	while (!infile.eof())
+	{
+		string line;
+		getline(infile, line);
+		int temp_cols = 0;
+		stringstream stream(line);
+		while (!stream.eof())
+			stream >> buff[cols*rows + temp_cols++];
+
+		if (temp_cols == 0)
+			continue;
+
+		if (cols == 0)
+			cols = temp_cols;
+
+		rows++;
+	}	
+
+	infile.close();
+
+	//rows--;
+
+	// Populate matrix with numbers.
+	Eigen::Matrix4f result(4, 4);
+	for (int i = 0; i < 4; i++)
+	for (int j = 0; j < 4; j++)
+		result(i, j) = buff[cols*i + j];
+	
+	//std::cout << result << std::endl;
+
+	return result;
+	
+}
+
+void
+transform (const pcl::PCLPointCloud2::Ptr &input, pcl::PCLPointCloud2::Ptr &output, Eigen::Matrix4f trfm)
+{
+  using namespace pcl;
+  // Check for 'normals'
+  bool has_normals = false;
+  for (size_t i = 0; i < input->fields.size (); ++i)
+    if (input->fields[i].name == "normals")
+      has_normals = true;
+
+  // Estimate
+  TicToc tt;
+  tt.tic ();
+  print_highlight (stderr, "Transforming ");
+
+  // Convert data to PointCloud<T>
+  if (has_normals)
+  {
+    PointCloud<PointNormal> xyznormals;
+    fromPCLPointCloud2 (*input, xyznormals);
+    pcl::transformPointCloud<PointNormal> (xyznormals, xyznormals, trfm);
+    // Copy back the xyz and normals
+    pcl::PCLPointCloud2 output_xyznormals;
+    toPCLPointCloud2 (xyznormals, output_xyznormals);
+    concatenateFields (*input, output_xyznormals, *output);
+  }
+  else
+  {
+    PointCloud<PointXYZ> xyz;
+    fromPCLPointCloud2 (*input, xyz);
+    pcl::transformPointCloud<PointXYZ> (xyz, xyz, trfm);
+    // Copy back the xyz and normals
+    pcl::PCLPointCloud2 output_xyz;
+    toPCLPointCloud2 (xyz, output_xyz);
+    concatenateFields (*input, output_xyz, *output);
+  }
+
+  print_info ("[done, "); print_value ("%g", tt.toc ()); print_info (" ms : "); print_value ("%d", output->width * output->height); print_info (" points]\n");
+}  
   
 void
 printHelp (int, char **argv)
@@ -137,6 +226,8 @@ printHelp (int, char **argv)
   print_info ("                                                See http://en.wikipedia.org/wiki/Vertex_Buffer_Object for more information.\n");
   print_info ("\n");
   print_info ("                     -use_point_picking       = enable the usage of picking points on screen (default "); print_value ("disabled"); print_info (")\n");
+  print_info ("\n");
+  print_info ("                     -a trfm.txt		     = enable aligning of clouds. Usage: cloud0.pcd|vtk|ply -a trfm0.txt cloud1.pcd|vtk|ply -a trfm1.txt   \n");
   print_info ("\n");
 
   print_info ("\n(Note: for multiple .pcd files, provide multiple -{fc,ps,opaque} parameters; they will be automatically assigned to the right file)\n");
@@ -233,10 +324,11 @@ main (int argc, char** argv)
   // Parse the command line arguments for .pcd files
   std::vector<int> p_file_indices   = pcl::console::parse_file_extension_argument (argc, argv, ".pcd");
   std::vector<int> vtk_file_indices = pcl::console::parse_file_extension_argument (argc, argv, ".vtk");
+  std::vector<int> ply_file_indices = pcl::console::parse_file_extension_argument (argc, argv, ".ply");
 
-  if (p_file_indices.size () == 0 && vtk_file_indices.size () == 0)
+  if (p_file_indices.size () == 0 && vtk_file_indices.size () == 0 && ply_file_indices.size () == 0)
   {
-    print_error ("No .PCD or .VTK file given. Nothing to visualize.\n");
+    print_error ("No .PCD, .VTK or .PLY file given. Nothing to visualize.\n");
     return (-1);
   }
 
@@ -290,6 +382,11 @@ main (int argc, char** argv)
       print_highlight ("Using immediate mode rendering.\n");
   }
 
+  
+  std::vector<int> txt_file_indices = pcl::console::parse_file_extension_argument (argc, argv, ".txt");
+  if (!txt_file_indices.empty()) 
+    print_highlight ("Point cloud alignment enabled.\n");
+  
   // Multiview enabled?
   int y_s = 0, x_s = 0;
   double x_step = 0, y_step = 0;
@@ -343,6 +440,7 @@ main (int argc, char** argv)
   int k = 0, l = 0, viewport = 0;
   // Load the data files
   pcl::PCDReader pcd;
+  pcl::PLYReader ply;
   pcl::console::TicToc tt;
   ColorHandlerPtr color_handler;
   GeometryHandlerPtr geometry_handler;
@@ -469,6 +567,19 @@ main (int argc, char** argv)
     }
 
     cloud_name << argv[p_file_indices.at (i)] << "-" << i;
+    
+    if(!txt_file_indices.empty()){    
+      //Test if the following argv has txt extension
+	int index = pcl::console::find_argument(argc, argv,"-a");
+	int index_cloud = pcl::console::find_argument(argc, argv,argv[p_file_indices.at (i)]);
+      if(index > 0 && (index == index_cloud+1)){
+	std::string pose_file = argv[index+1];
+	print_highlight (stderr, "Loading pose file "); print_value (stderr, "%s ", pose_file.c_str());
+	//Load transform
+	Eigen::Matrix4f mat = readMatrix(pose_file);
+	transform(cloud,cloud,mat);
+      }
+    }
 
     // Create the PCLVisualizer object here on the first encountered XYZ file
     if (!p)
@@ -656,7 +767,267 @@ main (int argc, char** argv)
     if (p->cameraFileLoaded ())
       print_info ("Camera parameters restored from %s.\n", p->getCameraFile ().c_str ());
   }
+  
+  
+    pcl::PCLPointCloud2::Ptr cloud_ply;
+  // Go through PLY files
+  for (size_t i = 0; i < ply_file_indices.size (); ++i)
+  {
+    tt.tic ();
+    cloud_ply.reset (new pcl::PCLPointCloud2);
+    Eigen::Vector4f origin;
+    Eigen::Quaternionf orientation;
+    int version;
 
+    print_highlight (stderr, "Loading "); print_value (stderr, "%s ", argv[ply_file_indices.at (i)]);
+
+    if (ply.read (argv[ply_file_indices.at (i)], *cloud_ply, origin, orientation, version) < 0)
+      return (-1);
+
+    std::stringstream cloud_name;
+
+    // ---[ Special check for 1-point multi-dimension histograms
+    if (cloud_ply->fields.size () == 1 && isMultiDimensionalFeatureField (cloud_ply->fields[0]))
+    {
+      cloud_name << argv[p_file_indices.at (i)];
+
+#if VTK_MAJOR_VERSION==6 || (VTK_MAJOR_VERSION==5 && VTK_MINOR_VERSION>6)
+      if (!ph)
+        ph.reset (new pcl::visualization::PCLPlotter);
+#endif
+
+      pcl::getMinMax (*cloud_ply, 0, cloud_ply->fields[0].name, min_p, max_p);
+#if VTK_MAJOR_VERSION==6 || (VTK_MAJOR_VERSION==5 && VTK_MINOR_VERSION>6)
+      ph->addFeatureHistogram (*cloud_ply, cloud_ply->fields[0].name, cloud_name.str ());
+#endif
+      print_info ("[done, "); print_value ("%g", tt.toc ()); print_info (" ms : "); print_value ("%d", cloud_ply->fields[0].count); print_info (" points]\n");
+      continue;
+    }
+
+    // ---[ Special check for 2D images
+    if (cloud_ply->fields.size () == 1 && isOnly2DImage (cloud_ply->fields[0]))
+    {
+      print_info ("[done, "); print_value ("%g", tt.toc ()); print_info (" ms : "); print_value ("%u", cloud_ply->width * cloud_ply->height); print_info (" points]\n");
+      print_info ("Available dimensions: "); print_value ("%s\n", pcl::getFieldsList (*cloud_ply).c_str ());
+      
+      std::stringstream name;
+      name << "PLY Viewer :: " << argv[ply_file_indices.at (i)];
+      pcl::visualization::ImageViewer::Ptr img (new pcl::visualization::ImageViewer (name.str ()));
+      pcl::PointCloud<pcl::RGB> rgb_cloud;
+      pcl::fromPCLPointCloud2 (*cloud_ply, rgb_cloud);
+
+      img->addRGBImage (rgb_cloud);
+      imgs.push_back (img);
+
+      continue;
+    }
+
+    cloud_name << argv[ply_file_indices.at (i)] << "-" << i;
+    
+    if(!txt_file_indices.empty()){
+      
+      //Test if the following argv has txt extension
+	int index = pcl::console::find_argument(argc, argv,"-a");
+	int index_cloud = pcl::console::find_argument(argc, argv,argv[ply_file_indices.at (i)]);
+      if(index > 0 && (index == index_cloud+1)){
+	std::string pose_file = argv[index+1];
+	print_highlight (stderr, "Loading pose file "); print_value (stderr, "%s ", pose_file.c_str());
+	//Load transform
+	Eigen::Matrix4f mat = readMatrix(pose_file);
+		pcl::io::savePCDFile("/home/thso/before_trfm.pcd", *cloud_ply);
+	transform(cloud_ply,cloud_ply,mat);
+	pcl::io::savePCDFile("/home/thso/after_trfm.pcd", *cloud_ply);
+
+      }
+    }
+
+    // Create the PCLVisualizer object here on the first encountered XYZ file
+    if (!p)
+    {
+      p.reset (new pcl::visualization::PCLVisualizer (argc, argv, "PLY viewer"));
+      if (use_pp)   // Only enable the point picking callback if the command line parameter is enabled
+        p->registerPointPickingCallback (&pp_callback, static_cast<void*> (&cloud_ply));
+
+      // Set whether or not we should be using the vtkVertexBufferObjectMapper
+      p->setUseVbos (use_vbos);
+
+      if (!p->cameraParamsSet () && !p->cameraFileLoaded ())
+      {
+        Eigen::Matrix3f rotation;
+        rotation = orientation;
+        p->setCameraPosition (origin [0]                  , origin [1]                  , origin [2],
+                              origin [0] + rotation (0, 2), origin [1] + rotation (1, 2), origin [2] + rotation (2, 2),
+                                           rotation (0, 1),              rotation (1, 1),              rotation (2, 1));
+      }
+    }
+
+    // Multiview enabled?
+    if (mview)
+    {
+      p->createViewPort (k * x_step, l * y_step, (k + 1) * x_step, (l + 1) * y_step, viewport);
+      k++;
+      if (k >= x_s)
+      {
+        k = 0;
+        l++;
+      }
+    }
+
+    if (cloud_ply->width * cloud_ply->height == 0)
+    {
+      print_error ("[error: no points found!]\n");
+      return (-1);
+    }
+
+    // If no color was given, get random colors
+    if (fcolorparam)
+    {
+      if (fcolor_r.size () > i && fcolor_g.size () > i && fcolor_b.size () > i)
+        color_handler.reset (new pcl::visualization::PointCloudColorHandlerCustom<pcl::PCLPointCloud2> (cloud_ply, fcolor_r[i], fcolor_g[i], fcolor_b[i]));
+      else
+        color_handler.reset (new pcl::visualization::PointCloudColorHandlerRandom<pcl::PCLPointCloud2> (cloud_ply));
+    }
+    else
+      color_handler.reset (new pcl::visualization::PointCloudColorHandlerRandom<pcl::PCLPointCloud2> (cloud_ply));
+
+    // Add the dataset with a XYZ and a random handler
+    geometry_handler.reset (new pcl::visualization::PointCloudGeometryHandlerXYZ<pcl::PCLPointCloud2> (cloud_ply));
+    // Add the cloud to the renderer
+    //p->addPointCloud<pcl::PointXYZ> (cloud_xyz, geometry_handler, color_handler, cloud_name.str (), viewport);
+    p->addPointCloud (cloud_ply, geometry_handler, color_handler, origin, orientation, cloud_name.str (), viewport);
+
+
+    if (mview)
+      // Add text with file name
+      p->addText (argv[ply_file_indices.at (i)], 5, 5, 10, 1.0, 1.0, 1.0, "text_" + std::string (argv[ply_file_indices.at (i)]), viewport);
+
+    // If normal lines are enabled
+    if (normals != 0)
+    {
+      int normal_idx = pcl::getFieldIndex (*cloud_ply, "normal_x");
+      if (normal_idx == -1)
+      {
+        print_error ("Normal information requested but not available.\n");
+        continue;
+        //return (-1);
+      }
+      //
+      // Convert from blob to pcl::PointCloud
+      pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_xyz (new pcl::PointCloud<pcl::PointXYZ>);
+      pcl::fromPCLPointCloud2 (*cloud_ply, *cloud_xyz);
+      cloud_xyz->sensor_origin_ = origin;
+      cloud_xyz->sensor_orientation_ = orientation;
+
+      pcl::PointCloud<pcl::Normal>::Ptr cloud_normals (new pcl::PointCloud<pcl::Normal>);
+      pcl::fromPCLPointCloud2 (*cloud_ply, *cloud_normals);
+      std::stringstream cloud_name_normals;
+      cloud_name_normals << argv[ply_file_indices.at (i)] << "-" << i << "-normals";
+      p->addPointCloudNormals<pcl::PointXYZ, pcl::Normal> (cloud_xyz, cloud_normals, normals, normals_scale, cloud_name_normals.str (), viewport);
+    }
+
+    // If principal curvature lines are enabled
+    if (pc != 0)
+    {
+      if (normals == 0)
+        normals = pc;
+
+      int normal_idx = pcl::getFieldIndex (*cloud_ply, "normal_x");
+      if (normal_idx == -1)
+      {
+        print_error ("Normal information requested but not available.\n");
+        continue;
+        //return (-1);
+      }
+      int pc_idx = pcl::getFieldIndex (*cloud_ply, "principal_curvature_x");
+      if (pc_idx == -1)
+      {
+        print_error ("Principal Curvature information requested but not available.\n");
+        continue;
+        //return (-1);
+      }
+      //
+      // Convert from blob to pcl::PointCloud
+      pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_xyz (new pcl::PointCloud<pcl::PointXYZ>);
+      pcl::fromPCLPointCloud2 (*cloud_ply, *cloud_xyz);
+      cloud_xyz->sensor_origin_ = origin;
+      cloud_xyz->sensor_orientation_ = orientation;
+      pcl::PointCloud<pcl::Normal>::Ptr cloud_normals (new pcl::PointCloud<pcl::Normal>);
+      pcl::fromPCLPointCloud2 (*cloud_ply, *cloud_normals);
+      pcl::PointCloud<pcl::PrincipalCurvatures>::Ptr cloud_pc (new pcl::PointCloud<pcl::PrincipalCurvatures>);
+      pcl::fromPCLPointCloud2 (*cloud_ply, *cloud_pc);
+      std::stringstream cloud_name_normals_pc;
+      cloud_name_normals_pc << argv[ply_file_indices.at (i)] << "-" << i << "-normals";
+      int factor = (std::min)(normals, pc);
+      p->addPointCloudNormals<pcl::PointXYZ, pcl::Normal> (cloud_xyz, cloud_normals, factor, normals_scale, cloud_name_normals_pc.str (), viewport);
+      p->setPointCloudRenderingProperties (pcl::visualization::PCL_VISUALIZER_COLOR, 1.0, 0.0, 0.0, cloud_name_normals_pc.str ());
+      p->setPointCloudRenderingProperties (pcl::visualization::PCL_VISUALIZER_LINE_WIDTH, 3, cloud_name_normals_pc.str ());
+      cloud_name_normals_pc << "-pc";
+      p->addPointCloudPrincipalCurvatures<pcl::PointXYZ, pcl::Normal> (cloud_xyz, cloud_normals, cloud_pc, factor, pc_scale, cloud_name_normals_pc.str (), viewport);
+      p->setPointCloudRenderingProperties (pcl::visualization::PCL_VISUALIZER_LINE_WIDTH, 3, cloud_name_normals_pc.str ());
+    }
+
+    // Add every dimension as a possible color
+    if (!fcolorparam)
+    {
+      int rgb_idx = 0;
+      int label_idx = 0;
+      for (size_t f = 0; f < cloud_ply->fields.size (); ++f)
+      {
+        if (cloud_ply->fields[f].name == "rgb" || cloud_ply->fields[f].name == "rgba")
+        {
+          rgb_idx = f + 1;
+          color_handler.reset (new pcl::visualization::PointCloudColorHandlerRGBField<pcl::PCLPointCloud2> (cloud_ply));
+        }
+        else if (cloud_ply->fields[f].name == "label")
+        {
+          label_idx = f + 1;
+          color_handler.reset (new pcl::visualization::PointCloudColorHandlerLabelField<pcl::PCLPointCloud2> (cloud_ply));
+        }
+        else
+        {
+          if (!isValidFieldName (cloud_ply->fields[f].name))
+            continue;
+          color_handler.reset (new pcl::visualization::PointCloudColorHandlerGenericField<pcl::PCLPointCloud2> (cloud_ply, cloud_ply->fields[f].name));
+        }
+        // Add the cloud_ply to the renderer
+        //p->addPointCloud<pcl::PointXYZ> (cloud_xyz, color_handler, cloud_name.str (), viewport);
+        p->addPointCloud (cloud_ply, color_handler, origin, orientation, cloud_name.str (), viewport);
+      }
+      // Set RGB color handler or label handler as default
+      p->updateColorHandlerIndex (cloud_name.str (), (rgb_idx ? rgb_idx : label_idx));
+    }
+
+    // Additionally, add normals as a handler
+    geometry_handler.reset (new pcl::visualization::PointCloudGeometryHandlerSurfaceNormal<pcl::PCLPointCloud2> (cloud_ply));
+    if (geometry_handler->isCapable ())
+      //p->addPointCloud<pcl::PointXYZ> (cloud_xyz, geometry_handler, cloud_name.str (), viewport);
+      p->addPointCloud (cloud_ply, geometry_handler, origin, orientation, cloud_name.str (), viewport);
+
+    if (use_immediate_rendering)
+      // Set immediate mode rendering ON
+      p->setPointCloudRenderingProperties (pcl::visualization::PCL_VISUALIZER_IMMEDIATE_RENDERING, 1.0, cloud_name.str ());
+
+    // Change the cloud_ply rendered point size
+    if (psize.size () > 0)
+      p->setPointCloudRenderingProperties (pcl::visualization::PCL_VISUALIZER_POINT_SIZE, psize.at (i), cloud_name.str ());
+
+    // Change the cloud_ply rendered opacity
+    if (opaque.size () > 0)
+      p->setPointCloudRenderingProperties (pcl::visualization::PCL_VISUALIZER_OPACITY, opaque.at (i), cloud_name.str ());
+
+    // Reset camera viewpoint to center of cloud_ply if camera parameters were not passed manually and this is the first loaded cloud_ply
+    if (i == 0 && !p->cameraParamsSet () && !p->cameraFileLoaded ())
+    {
+      p->resetCameraViewpoint (cloud_name.str ());
+      p->resetCamera ();
+    }
+
+    print_info ("[done, "); print_value ("%g", tt.toc ()); print_info (" ms : "); print_value ("%u", cloud_ply->width * cloud_ply->height); print_info (" points]\n");
+    print_info ("Available dimensions: "); print_value ("%s\n", pcl::getFieldsList (*cloud_ply).c_str ());
+    if (p->cameraFileLoaded ())
+      print_info ("Camera parameters restored from %s.\n", p->getCameraFile ().c_str ());
+  }
+  
   if (!mview && p)
   {
     std::string str;
@@ -664,12 +1035,17 @@ main (int argc, char** argv)
       str = std::string (argv[p_file_indices.at (0)]);
     else if (!vtk_file_indices.empty ())
       str = std::string (argv[vtk_file_indices.at (0)]);
+    else if (!ply_file_indices.empty ())
+      str = std::string (argv[ply_file_indices.at (0)]);
 
     for (size_t i = 1; i < p_file_indices.size (); ++i)
       str += ", " + std::string (argv[p_file_indices.at (i)]);
 
     for (size_t i = 1; i < vtk_file_indices.size (); ++i)
       str += ", " + std::string (argv[vtk_file_indices.at (i)]);
+    
+    for (size_t i = 1; i < ply_file_indices.size (); ++i)
+      str += ", " + std::string (argv[ply_file_indices.at (i)]);
 
     p->addText (str, 5, 5, 10, 1.0, 1.0, 1.0, "text_allnames");
   }
