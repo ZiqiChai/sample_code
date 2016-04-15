@@ -106,14 +106,14 @@ bool ReconstructPointCloud::BilateralUpsampling(pcl::PointCloud<pcl::PointXYZRGB
 
 }
 
-void ReconstructPointCloud::poisson (const pcl::PointCloud<pcl::PointNormal>::Ptr &cloud, pcl::PolygonMesh &output,
+void ReconstructPointCloud::poisson (const CloudNT::Ptr &cloud, pcl::PolygonMesh &output,
          int depth, int solver_divide, int iso_divide, float point_weight)
 {
 
   using namespace pcl::console;
   print_info ("Using parameters: depth %d, solverDivide %d, isoDivide %d\n", depth, solver_divide, iso_divide);
 
-  pcl::Poisson<pcl::PointNormal> poisson;
+  pcl::Poisson<PointNT> poisson;
   poisson.setDepth (depth);
   poisson.setSolverDivide (solver_divide);
   poisson.setIsoDivide (iso_divide);
@@ -134,10 +134,14 @@ void ReconstructPointCloud::poisson (const pcl::PointCloud<pcl::PointNormal>::Pt
 ////////////////////////////////////////////////////////////////////
 ////Convert point cloud to mesh without modifying vertex positions//
 ///////////////////////////////////////////////////////////////////
-pcl::PolygonMesh ReconstructPointCloud::GreedyProjectionTriangulation(pcl::PointCloud<pcl::PointNormal>::Ptr cloud_with_normals, double SearchRadius)
+pcl::PolygonMesh ReconstructPointCloud::GreedyProjectionTriangulation(CloudNT::Ptr cloud_with_normals, double SearchRadius)
 {
+    using namespace pcl::console;
+    
+	TicToc tt;
+	tt.tic ();
 	// Initialize objects
-	pcl::GreedyProjectionTriangulation<pcl::PointNormal> gp3;
+	pcl::GreedyProjectionTriangulation<PointNT> gp3;
 
 	// Set the maximum distance between connected points (maximum edge length)
 	gp3.setSearchRadius (SearchRadius); //0.025
@@ -151,7 +155,7 @@ pcl::PolygonMesh ReconstructPointCloud::GreedyProjectionTriangulation(pcl::Point
 	gp3.setNormalConsistency(true);
 
 	// Create search tree*
-	pcl::search::KdTree<pcl::PointNormal>::Ptr tree2 (new pcl::search::KdTree<pcl::PointNormal>);
+	pcl::search::KdTree<PointNT>::Ptr tree2 (new pcl::search::KdTree<PointNT>);
 	tree2->setInputCloud (cloud_with_normals);
 	// Define inputs to the triangulation structure
 	gp3.setInputCloud (cloud_with_normals);
@@ -164,7 +168,8 @@ pcl::PolygonMesh ReconstructPointCloud::GreedyProjectionTriangulation(pcl::Point
 	std::vector<int> parts = gp3.getPartIDs();
 	std::vector<int> states = gp3.getPointStates();
 
-	 std::cout << "GreedyProjectionTriangulation parts: " << (int)parts.size()<< std::endl;
+	//std::cout << "GreedyProjectionTriangulation parts: " << (int)parts.size()<< std::endl;
+	print_highlight("Reconstructed point cloud in "); print_value("%g ", tt.toc()); print_info("msec \n");
 
 	return triangles;
 }
@@ -172,20 +177,20 @@ pcl::PolygonMesh ReconstructPointCloud::GreedyProjectionTriangulation(pcl::Point
 ////////////////////////////////////////////////////////////////////
 ////Convert point cloud to mesh by modifying vertex positions//
 ///////////////////////////////////////////////////////////////////
-pcl::PolygonMesh ReconstructPointCloud::MarchingCubes(pcl::PointCloud<pcl::PointNormal>::Ptr cloud_with_normals, double leafSize, double isoLevel)
+pcl::PolygonMesh ReconstructPointCloud::MarchingCubes(CloudNT::Ptr cloud_with_normals, double leafSize, double isoLevel)
 {
     //double leafSize = 0.5;
     //double isoLevel = 0.5;
 
 	// Create search tree*
 	//pcl::KdTree<pcl::PointNormal>::Ptr tree2(new pcl::KdTreeFLANN<pcl::PointNormal>);
-    pcl::search::KdTree<pcl::PointNormal>::Ptr tree2 (new pcl::search::KdTree<pcl::PointNormal>);
+    pcl::search::KdTree<PointNT>::Ptr tree2 (new pcl::search::KdTree<PointNT>);
     tree2->setInputCloud(cloud_with_normals);
 
 	pcl::PolygonMesh triangles;
 
 	// Initialize objects
-	pcl::MarchingCubesHoppe<pcl::PointNormal> mc;
+	pcl::MarchingCubesHoppe<PointNT> mc;
 	// Set parameters
 	mc.setIsoLevel(isoLevel);   //ISO: must be between 0 and 1.0
 	mc.setSearchMethod(tree2);
@@ -201,7 +206,7 @@ pcl::PolygonMesh ReconstructPointCloud::MarchingCubes(pcl::PointCloud<pcl::Point
 ////////////////////////////////////////////////////////////////////
 ////Convert point cloud to mesh by modifying vertex positions//
 ///////////////////////////////////////////////////////////////////
-pcl::PolygonMesh ReconstructPointCloud::GridProjection(pcl::PointCloud<pcl::PointNormal>::Ptr cloud_with_normals)
+pcl::PolygonMesh ReconstructPointCloud::GridProjection(CloudNT::Ptr cloud_with_normals)
 {
 	double resolution = 0.005;	//Set the size of the grid cell
 	int padding_size = 3;		// When averaging the vectors, we find the union of all the input data points within the padding area,and do a weighted average.
@@ -209,11 +214,11 @@ pcl::PolygonMesh ReconstructPointCloud::GridProjection(pcl::PointCloud<pcl::Poin
 	int setMaxBinarySearchLevel = 10; //Binary search is used in projection.l
 
 	// Create search tree*
-	pcl::search::KdTree<pcl::PointNormal>::Ptr tree2 (new pcl::search::KdTree<pcl::PointNormal>);
+	pcl::search::KdTree<PointNT>::Ptr tree2 (new pcl::search::KdTree<PointNT>);
 	tree2->setInputCloud (cloud_with_normals);
 
 	// Initialize objects
-	pcl::GridProjection<pcl::PointNormal> gbpolygon;
+	pcl::GridProjection<PointNT> gbpolygon;
 	pcl::PolygonMesh triangles;
 
 	// Set parameters
